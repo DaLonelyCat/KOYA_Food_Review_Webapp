@@ -1,0 +1,86 @@
+import { useSession } from "@/app/(main)/SessionProvider";
+import { useToast } from "@/components/ui/use-toast";
+import { ReviewsPage } from "@/lib/types";
+import {
+  InfiniteData,
+  QueryFilters,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { submitReview } from "./actions";
+
+export function useSubmitReviewMutation() {
+  const { toast } = useToast();
+
+  const queryClient = useQueryClient();
+
+  const { user } = useSession();
+
+  const mutation = useMutation({
+    mutationFn: submitReview,
+    onSuccess: async (newReview) => {
+      const queryFilter = {
+        queryKey: ["review-feed"],
+        predicate(query) {
+          return (
+            query.queryKey.includes("for-you") ||
+            (query.queryKey.includes("user-posts") &&
+              query.queryKey.includes(user.id))
+          );
+        },
+      } satisfies QueryFilters;
+
+      await queryClient.cancelQueries(queryFilter);
+
+      queryClient.setQueriesData<InfiniteData<ReviewsPage, string | null>>(
+        queryFilter,
+        (oldData) => {
+          const firstPage = oldData?.pages[0];
+
+          if (firstPage) {
+            return {
+              pageParams: oldData.pageParams,
+              pages: [
+                {
+                  posts: [newReview, ...firstPage.posts],
+                  nextCursor: firstPage.nextCursor,
+                },
+                ...oldData.pages.slice(1),
+              ],
+            };
+          }
+        },
+      );
+
+      queryClient.invalidateQueries({
+        queryKey: queryFilter.queryKey,
+        predicate(query) {
+          return queryFilter.predicate(query) && !query.state.data;
+        },
+      });
+
+      // Invalidate restaurant reviews if this is a restaurant review
+      if (newReview.restaurantId) {
+        queryClient.invalidateQueries({
+          queryKey: ["restaurant-reviews", newReview.restaurantId],
+        });
+      }
+
+      toast({
+        description: newReview.restaurantId ? "Review posted" : "Review created",
+      });
+    },
+    onError(error) {
+      console.error(error);
+      toast({
+        variant: "destructive",
+        description: "Failed to post review. Please try again.",
+      });
+    },
+  });
+
+  return mutation;
+}
+
+// Legacy export for backward compatibility
+export const useSubmitPostMutation = useSubmitReviewMutation;
